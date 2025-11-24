@@ -21,14 +21,13 @@ import asyncio
 import os
 
 from backend.dal.database import db_helper
-from backend.utils.modbus_client import ModbusClient
+from backend.utils.pac3220_do import write_do_0, read_do_0
 
 # --- Configuration (adjustable) ---
 # Default Modbus register to WRITE for PAC3220 DO (zero-based or device-specified as needed)
 DEFAULT_WRITE_REGISTER = 60008  # PAC3220 spec for "Switch outputs" (Table in manual)
-# Default Modbus register to READ status from (holding register view for DO status)
-DEFAULT_READ_REGISTER = 207
-# Bitmask within read register that contains Digital Output 0.0 state
+# Default status bit (Discrete Inputs) for DO 0.0
+DEFAULT_READ_REGISTER = 400
 DEFAULT_STATUS_BITMASK = 0x0001
 # Modbus TCP port
 MODBUS_PORT = 502
@@ -150,13 +149,7 @@ async def _execute_command(cmd: Dict[str, Any]) -> None:
         print(f"[ERROR] Command {command_id} missing analyzer IP")
         return
 
-    # Prepare Modbus client
-    client = ModbusClient(host=host, port=MODBUS_PORT, unit_id=unit_id)
-    ok = await client.connect()
-    if not ok:
-        _update_result(command_id, "FAILED", f"connect_failed:{host}")
-        print(f"[ERROR] Command {command_id} failed to connect to {host}:{MODBUS_PORT}")
-        return
+    port = MODBUS_PORT
 
     # Determine target boolean and register value encoding (PAC3220 specifics)
     target_state_bool: Optional[bool] = None
@@ -181,13 +174,11 @@ async def _execute_command(cmd: Dict[str, Any]) -> None:
     else:
         # Unknown command: fail fast
         _update_result(command_id, "FAILED", f"unknown_command:{command}")
-        await client.disconnect()
         print(f"[ERROR] Command {command_id} has unknown command '{command}'")
         return
 
-    # PAC3220 encoding: Byte0 = Output ID (0), Byte1 = Action (1 => ON, 0 => OFF)
-    # So combined 16-bit value: Byte1 << 8 | Byte0. For ON (1,0) -> 256. For OFF -> 0.
-    target_value = 256 if target_state_bool else 0
+    action_int = 1 if target_state_bool else 0
+    combined_value = (0 << 8) | action_int
 
     # Idempotence: check DB state and skip if already in target
     try:
@@ -202,10 +193,6 @@ async def _execute_command(cmd: Dict[str, Any]) -> None:
                 # Already at desired state — mark success, record event, disconnect
                 _update_result(command_id, "SUCCESS", None)
                 _record_do_event(analyzer_id, coil_address, cs, desired_int, "manual" if command in ("ON", "OFF", "TOGGLE") else "auto", True, source_note=notes)
-                try:
-                    await client.disconnect()
-                except Exception:
-                    pass
                 print(f"[INFO] Command {command_id} skipped: already in desired state {desired_int}")
                 return
     except Exception as e:
@@ -216,8 +203,8 @@ async def _execute_command(cmd: Dict[str, Any]) -> None:
     last_error: Optional[str] = None
     for attempt in range(1, max_retries + 1):
         try:
-            print(f"[DO] Command {command_id} attempt {attempt}: FC06 write reg={write_register_address} val={target_value}")
-            ok_write = await client.write_register(write_register_address, int(target_value))
+            print(f"[DO] Command {command_id} attempt {attempt}: FC06 write reg={write_register_address} val={combined_value}")
+            ok_write = write_do_0(host=host, action=action_int, port=port, unit_id=unit_id, reg_do_command=write_register_address, check_type=False)
             if ok_write:
                 success = True
                 break
@@ -230,30 +217,21 @@ async def _execute_command(cmd: Dict[str, Any]) -> None:
         if attempt < max_retries:
             await asyncio.sleep(RETRY_DELAY_SECONDS)
 
-    # After attempts, always attempt to read back (if we connected and write succeeded) to verify state
+    # After attempts, attempt to read back to verify state
     read_back_value = None
     read_back_state: Optional[int] = None
     if success:
         try:
-            print(f"[DO] Command {command_id}: FC03 read-back reg={read_register_address}")
-            read_back_value = await client.read_register_value(read_register_address)
+            read_back_value = read_do_0(host=host, port=port, unit_id=unit_id, reg_do_status_bit=DEFAULT_READ_REGISTER)
             if read_back_value is not None:
-                # parse bitmask
-                try:
-                    read_back_state = 1 if (int(read_back_value) & int(status_bitmask)) != 0 else 0
-                except Exception:
-                    read_back_state = None
+                read_back_state = int(read_back_value)
             print(f"[DO] Command {command_id}: read_back raw={read_back_value} parsed_state={read_back_state}")
         except Exception as e:
             print(f"[WARN] Command {command_id} read-back failed: {e}")
             read_back_value = None
             read_back_state = None
 
-    # Clean disconnect
-    try:
-        await client.disconnect()
-    except Exception:
-        pass
+    # No persistent Modbus connection in helper-based calls
 
     # Finalize result based on verification
     desired_int = 1 if target_state_bool else 0
