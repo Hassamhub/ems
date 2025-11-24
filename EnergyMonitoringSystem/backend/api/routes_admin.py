@@ -55,6 +55,19 @@ async def admin_do_enqueue(request: AdminDOEnqueueRequest, current_user: Dict = 
         if not (0 <= int(request.coil_address) <= 9999):
             raise HTTPException(status_code=400, detail="Invalid coil address")
 
+        # Ensure target analyzer belongs to a real user (Role='USER')
+        try:
+            owner_rows = db_helper.execute_query(
+                "SELECT u.Role FROM app.Analyzers a JOIN app.Users u ON a.UserID = u.UserID WHERE a.AnalyzerID = ?",
+                (int(request.analyzer_id),)
+            ) or []
+            if owner_rows and str(owner_rows[0].get("Role") or "").upper() != "USER":
+                raise HTTPException(status_code=400, detail="Analyzer must belong to a user account")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
         cmd_params = {
             "@AnalyzerID": int(request.analyzer_id),
             "@CoilAddress": int(request.coil_address),
@@ -113,12 +126,13 @@ async def get_all_users(current_user: Dict = Depends(get_current_user)):
 
         if not result:
             query = (
+                
                 """
                 SELECT UserID, Username, FullName, Email, Role,
                        AllocatedKWh, UsedKWh, RemainingKWh, IsLocked,
                        CreatedAt, LastLoginAt
                 FROM app.Users
-                WHERE ISNULL(IsActive, 1) = 1
+                WHERE ISNULL(IsActive, 1) = 1 AND UPPER(Role) = 'USER'
                 ORDER BY CreatedAt DESC
                 """
             )
@@ -242,6 +256,16 @@ async def get_user_details(user_id: int, current_user: Dict = Depends(get_curren
         """
 
         analyzers = db_helper.execute_query(analyzers_query, (user_id,))
+        devices = []
+        for a in (analyzers or []):
+            devices.append({
+                "DeviceID": a.get("AnalyzerID"),
+                "DeviceName": a.get("SerialNumber"),
+                "IPAddress": a.get("IPAddress"),
+                "IsActive": a.get("IsActive"),
+                "LastSeen": a.get("LastSeen"),
+                "Status": a.get("ConnectionStatus"),
+            })
 
         # Get recent allocations
         allocations_query = """
@@ -254,6 +278,7 @@ async def get_user_details(user_id: int, current_user: Dict = Depends(get_curren
         allocations = db_helper.execute_query(allocations_query, (user_id,))
 
         user["analyzers"] = analyzers or []
+        user["devices"] = devices
         user["recent_allocations"] = allocations or []
         user["device_count"] = len(analyzers) if analyzers else 0
 
@@ -479,12 +504,12 @@ async def get_admin_dashboard(current_user: Dict = Depends(get_current_user)):
         # Get dashboard statistics
         dashboard_query = """
         SELECT
-            (SELECT COUNT(*) FROM app.Users WHERE IsActive = 1) as total_users,
+            (SELECT COUNT(*) FROM app.Users WHERE IsActive = 1 AND UPPER(Role) = 'USER') as total_users,
             (SELECT COUNT(*) FROM app.Analyzers WHERE IsActive = 1) as total_analyzers,
             (SELECT COUNT(*) FROM app.Analyzers WHERE ConnectionStatus = 'ONLINE' AND IsActive = 1) as online_analyzers,
             (SELECT COUNT(*) FROM app.Alerts WHERE IsActive = 1 AND IsRead = 0) as unread_alerts,
-            (SELECT SUM(AllocatedKWh) FROM app.Users WHERE IsActive = 1) as total_allocated_kwh,
-            (SELECT SUM(UsedKWh) FROM app.Users WHERE IsActive = 1) as total_used_kwh,
+            (SELECT SUM(AllocatedKWh) FROM app.Users WHERE IsActive = 1 AND UPPER(Role) = 'USER') as total_allocated_kwh,
+            (SELECT SUM(UsedKWh) FROM app.Users WHERE IsActive = 1 AND UPPER(Role) = 'USER') as total_used_kwh,
             (SELECT COUNT(*) FROM app.Readings WHERE Timestamp >= DATEADD(HOUR, -24, GETUTCDATE())) as readings_last_24h
         """
 
@@ -575,6 +600,19 @@ async def admin_do_control(request: AdminDOEnqueueRequest, current_user: Dict = 
 
         if not (0 <= int(request.coil_address) <= 9999):
             raise HTTPException(status_code=400, detail="Invalid coil address")
+
+        # Ensure target analyzer belongs to a real user (Role='USER')
+        try:
+            owner_rows = db_helper.execute_query(
+                "SELECT u.Role FROM app.Analyzers a JOIN app.Users u ON a.UserID = u.UserID WHERE a.AnalyzerID = ?",
+                (int(request.analyzer_id),)
+            ) or []
+            if owner_rows and str(owner_rows[0].get("Role") or "").upper() != "USER":
+                raise HTTPException(status_code=400, detail="Analyzer must belong to a user account")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
 
         params = {
             "@AnalyzerID": int(request.analyzer_id),

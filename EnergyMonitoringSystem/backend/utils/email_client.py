@@ -4,11 +4,12 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import List, Optional
 
-SMTP_HOST = os.getenv("SMTP_HOST")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER")
+SMTP_HOST = os.getenv("SMTP_HOST") or os.getenv("SMTP_SERVER")
+SMTP_PORT = int(os.getenv("SMTP_PORT", os.getenv("SMTP_PORT", "587")))
+SMTP_USER = os.getenv("SMTP_USER") or os.getenv("SMTP_USERNAME")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
-SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USER or "noreply@example.com")
+SMTP_FROM = os.getenv("SMTP_FROM", os.getenv("SMTP_FROM_EMAIL", SMTP_USER or "noreply@example.com"))
+SMTP_USE_SSL = os.getenv("SMTP_USE_SSL", "false").lower() in ("1", "true", "yes") or SMTP_PORT == 465
 ALERTS_ENABLED = os.getenv("ALERTS_ENABLED", "false").lower() in ("1", "true", "yes")
 
 
@@ -29,15 +30,21 @@ def send_email(subject: str, body: str, to_emails: List[str], html: bool = False
         msg.attach(MIMEText(body, "plain"))
 
     try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as server:
-            server.ehlo()
-            try:
-                server.starttls()
-            except Exception:
-                pass
-            if SMTP_USER and SMTP_PASSWORD:
-                server.login(SMTP_USER, SMTP_PASSWORD)
-            server.sendmail(SMTP_FROM, to_emails, msg.as_string())
+        if SMTP_USE_SSL:
+            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=10) as server:
+                if SMTP_USER and SMTP_PASSWORD:
+                    server.login(SMTP_USER, SMTP_PASSWORD)
+                server.sendmail(SMTP_FROM, to_emails, msg.as_string())
+        else:
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as server:
+                server.ehlo()
+                try:
+                    server.starttls()
+                except Exception:
+                    pass
+                if SMTP_USER and SMTP_PASSWORD:
+                    server.login(SMTP_USER, SMTP_PASSWORD)
+                server.sendmail(SMTP_FROM, to_emails, msg.as_string())
         return True
     except Exception:
         return False

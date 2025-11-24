@@ -101,13 +101,18 @@ async def _check_usage_threshold_and_notify() -> None:
             ) or []
             if recent:
                 continue
-            subject = "Usage Warning"
+            subject = "Usage Warning — 80% Energy Limit Reached"
             pct = 0.0
             try:
                 pct = (float(r.get("UsedKWh") or 0.0) / float(r.get("AllocatedKWh") or 1.0)) * 100.0
             except Exception:
                 pct = 80.0
-            body = f"Dear {r.get('Username')}, your usage has reached {pct:.0f}% of allocated units."
+            body = (
+                f"Dear {r.get('Username')},\n\n"
+                f"You have consumed {pct:.0f}% of your allocated energy units.\n"
+                f"Please plan a recharge to avoid automatic supply cutoff at 100%.\n\n"
+                f"Regards,\nPAC3220 Energy Monitoring System"
+            )
             ok = send_email(subject, body, [email], html=False)
             try:
                 db_helper.execute_query(
