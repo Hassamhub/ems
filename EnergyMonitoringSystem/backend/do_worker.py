@@ -19,9 +19,18 @@ Features / fixes applied:
 from typing import Optional, List, Dict, Any
 import asyncio
 import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+try:
+    env_path = Path(__file__).resolve().parents[3] / ".env"
+    load_dotenv(dotenv_path=str(env_path))
+except Exception:
+    pass
 
 from backend.dal.database import db_helper
 from backend.utils.pac3220_do import write_do_0, read_do_0, encode_do_value
+from pymodbus.client import ModbusTcpClient
 
 # Compatibility shim for legacy tests expecting a ModbusClient symbol
 class ModbusClient:
@@ -121,6 +130,28 @@ def _record_do_event(
             (analyzer_id, "INFO" if success else "ERROR", "do_control" if success else "do_control_failed",
              f"DO {'ON' if new_state == 1 else 'OFF' if new_state == 0 else 'UNKNOWN'}", src, meta),
         )
+        if success and source_note and ("auto_exhausted" in source_note):
+            try:
+                db_helper.execute_query(
+                    "INSERT INTO ops.Events (AnalyzerID, Level, EventType, Message, Source, MetaData, Timestamp) VALUES (?, 'INFO', 'auto_on_executed', 'Auto ON executed', ?, ?, GETUTCDATE())",
+                    (analyzer_id, src, meta)
+                )
+            except Exception:
+                pass
+            try:
+                urow = db_helper.execute_query(
+                    "SELECT TOP 1 UserID FROM app.Analyzers WHERE AnalyzerID = ?",
+                    (analyzer_id,)
+                ) or []
+                if urow:
+                    uid = int(urow[0].get("UserID") or 0)
+                    if uid:
+                        db_helper.execute_query(
+                            "IF COL_LENGTH('app.Users','DoAutoOnTriggered') IS NOT NULL UPDATE app.Users SET DoAutoOnTriggered = 1 WHERE UserID = ?",
+                            (uid,)
+                        )
+            except Exception:
+                pass
     except Exception as e:
         print(f"[WARN] _record_do_event failed: {e}")
 
@@ -227,6 +258,22 @@ async def _execute_command(cmd: Dict[str, Any]) -> None:
     # After attempts, attempt to read back to verify state
     read_back_value = None
     read_back_state: Optional[int] = None
+    # Fallback: try FC05 coil write when FC06 fails
+    if not success:
+        try:
+            client = ModbusTcpClient(host, port=port)
+            if client.connect():
+                wr = client.write_coil(coil_address, bool(target_state_bool), slave=unit_id)
+                success = bool(wr and not wr.isError())
+            client.close()
+            if success:
+                last_error = None
+                print(f"[DO] Command {command_id}: FC05 fallback write succeeded")
+            else:
+                print(f"[WARN] Command {command_id}: FC05 fallback write failed")
+        except Exception as e:
+            print(f"[ERROR] Command {command_id}: FC05 fallback exception: {e}")
+
     if success:
         try:
             if os.getenv("UNIT_TEST", "0") == "1" or host in ("127.0.0.1", "localhost"):
@@ -236,6 +283,17 @@ async def _execute_command(cmd: Dict[str, Any]) -> None:
                 read_back_value = read_do_0(host=host, port=port, unit_id=unit_id, reg_do_status_bit=DEFAULT_READ_REGISTER)
                 if read_back_value is not None:
                     read_back_state = int(read_back_value)
+                else:
+                    try:
+                        client = ModbusTcpClient(host, port=port)
+                        if client.connect():
+                            rb = client.read_coils(coil_address, 1, slave=unit_id)
+                            if rb and not rb.isError() and getattr(rb, 'bits', None):
+                                read_back_state = 1 if bool(rb.bits[0]) else 0
+                                read_back_value = read_back_state
+                        client.close()
+                    except Exception:
+                        pass
             print(f"[DO] Command {command_id}: read_back raw={read_back_value} parsed_state={read_back_state}")
         except Exception as e:
             print(f"[WARN] Command {command_id} read-back failed: {e}")

@@ -138,10 +138,9 @@ async def login(request: LoginRequest, http_req: Request):
         req_username = (request.username or "").strip()
         req_password = (request.password or "").strip()
 
-        # Query user by username only; verify password in Python (plain-text expected)
+        # Query user by username only; verify password in Python (robust)
         query = """
         SELECT UserID, Username, FullName, Email, Password as Password, Role, IsLocked, ISNULL(IsActive, 1) as IsActive
-        , Status, AllocatedKWh, UsedKWh, RemainingKWh, LastLoginAt
         FROM app.Users
         WHERE Username = ?
         """
@@ -164,11 +163,6 @@ async def login(request: LoginRequest, http_req: Request):
         # Check if user is locked
         if user.get("IsLocked"):
             raise HTTPException(status_code=403, detail="Account is locked")
-
-        # Check status field
-        status = (user.get("Status") or "ACTIVE").upper()
-        if status != "ACTIVE":
-            raise HTTPException(status_code=403, detail=f"Account status is {status}")
 
         # Verify password
         stored_password = user.get("Password")
@@ -237,11 +231,7 @@ async def login(request: LoginRequest, http_req: Request):
                 "username": user["Username"],
                 "fullname": user["FullName"],
                 "email": user["Email"],
-                "role": norm_role,
-                "allocated_kwh": float(user.get("AllocatedKWh") or 0.0),
-                "used_kwh": float(user.get("UsedKWh") or 0.0),
-                "remaining_kwh": float(user.get("RemainingKWh") or 0.0),
-                "last_login_at": user.get("LastLoginAt")
+                "role": user["Role"]
             }
         )
 

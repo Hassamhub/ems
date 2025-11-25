@@ -68,9 +68,24 @@ async def admin_do_enqueue(request: AdminDOEnqueueRequest, current_user: Dict = 
         except Exception:
             pass
 
+        # Resolve coil address from DB when 0 or missing
+        resolved_coil = int(request.coil_address)
+        try:
+            if resolved_coil == 0:
+                crow = db_helper.execute_query(
+                    "SELECT ISNULL(BreakerCoilAddress, 0) as Coil FROM app.Analyzers WHERE AnalyzerID = ?",
+                    (int(request.analyzer_id),)
+                ) or []
+                if crow:
+                    rc = int(crow[0].get("Coil") or 0)
+                    if rc > 0:
+                        resolved_coil = rc
+        except Exception:
+            pass
+
         cmd_params = {
             "@AnalyzerID": int(request.analyzer_id),
-            "@CoilAddress": int(request.coil_address),
+            "@CoilAddress": resolved_coil,
             "@Command": request.command,
             "@RequestedBy": current_user.get("user_id"),
             "@MaxRetries": 3,
@@ -126,7 +141,6 @@ async def get_all_users(current_user: Dict = Depends(get_current_user)):
 
         if not result:
             query = (
-                
                 """
                 SELECT UserID, Username, FullName, Email, Role,
                        AllocatedKWh, UsedKWh, RemainingKWh, IsLocked,
@@ -137,6 +151,11 @@ async def get_all_users(current_user: Dict = Depends(get_current_user)):
                 """
             )
             result = db_helper.execute_query(query) or []
+        else:
+            try:
+                result = [row for row in (result or []) if str(row.get("Role") or "").upper() == "USER"]
+            except Exception:
+                pass
 
         return {
             "success": True,
@@ -326,7 +345,7 @@ async def recharge_user(user_id: int, request: RechargeRequest, current_user: Di
         if result:
             try:
                 an_rows = db_helper.execute_query(
-                    "SELECT AnalyzerID, ISNULL(BreakerCoilAddress, 49997) as Coil FROM app.Analyzers WHERE UserID = ? AND IsActive = 1",
+                    "SELECT AnalyzerID, ISNULL(BreakerCoilAddress, 0) as Coil FROM app.Analyzers WHERE UserID = ? AND IsActive = 1",
                     (user_id,)
                 ) or []
                 for a in an_rows:
@@ -343,6 +362,66 @@ async def recharge_user(user_id: int, request: RechargeRequest, current_user: Di
                     )
             except Exception:
                 pass
+            try:
+                # Reload latest allocation and usage for email template
+                uinfo = db_helper.execute_query(
+                    "SELECT FullName, Username, ISNULL(AllocatedKWh,0) AS AllocatedKWh, ISNULL(UsedKWh,0) AS UsedKWh FROM app.Users WHERE UserID = ?",
+                    (user_id,)
+                ) or []
+                fullname = (uinfo[0].get("FullName") if uinfo else None) or users[0].get("Username")
+                allocated = (uinfo[0].get("AllocatedKWh") if uinfo else 0)
+                used = (uinfo[0].get("UsedKWh") if uinfo else 0)
+
+                email = users[0].get("Email") if isinstance(users[0], dict) else None
+                if email:
+                    from backend.utils.email_client import send_email
+                    subj = f"Recharge completed — new allocation: {allocated} kWh"
+                    body = (
+                        f"Dear {fullname},\n\n"
+                        f"Your account has been successfully recharged. Your new energy allocation is {allocated} kWh.\n\n"
+                        f"Current balance:\n"
+                        f" • Allocated: {allocated} kWh\n"
+                        f" • Used: {used} kWh\n\n"
+                        f"You may now continue using the service. If you need assistance, please contact support@example.com.\n\n"
+                        f"Warm regards,\nEnergy Monitoring System\n"
+                    )
+                    send_email(subj, body, [email], html=False)
+            except Exception:
+                pass
+            try:
+                db_helper.execute_query(
+                    "INSERT INTO ops.Events (UserID, Level, EventType, Message, Source, MetaData, Timestamp) VALUES (?, 'INFO', 'usage_flags_reset', 'Usage flags reset after recharge', 'api', ?, GETUTCDATE())",
+                    (
+                        user_id,
+                        f'{'{'}"user_id": {user_id}, "amount": {request.amount}{'}'}'
+                    )
+                )
+                db_helper.execute_query(
+                    "INSERT INTO ops.Events (UserID, Level, EventType, Message, Source, MetaData, Timestamp) VALUES (?, 'INFO', 'recharge', 'Recharge completed', 'api', ?, GETUTCDATE())",
+                    (
+                        user_id,
+                        f'{'{'}"user_id": {user_id}, "new_allocated": {allocated}, "used": {used}{'}'}'
+                    )
+                )
+            except Exception:
+                pass
+            try:
+                db_helper.execute_query(
+                    "IF COL_LENGTH('app.Users','Sent80PercentWarning') IS NOT NULL UPDATE app.Users SET Sent80PercentWarning = 0 WHERE UserID = ?",
+                    (user_id,)
+                )
+                db_helper.execute_query(
+                    "IF COL_LENGTH('app.Users','DoAutoOnTriggered') IS NOT NULL UPDATE app.Users SET DoAutoOnTriggered = 0 WHERE UserID = ?",
+                    (user_id,)
+                )
+            except Exception:
+                try:
+                    db_helper.execute_stored_procedure(
+                        "sp_SetUserAlertFlags",
+                        {"@UserID": user_id, "@Sent80": 0, "@AutoOn": 0}
+                    )
+                except Exception:
+                    pass
             return {
                 "success": True,
                 "message": f"Successfully recharged {request.amount} kWh for user {users[0]['Username']}",

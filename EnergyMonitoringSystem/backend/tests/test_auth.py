@@ -1,4 +1,4 @@
-import os, sys
+import os
 import pytest
 from fastapi.testclient import TestClient
 
@@ -11,9 +11,6 @@ os.environ.setdefault("DB_NAME", "testdb")
 os.environ.setdefault("DB_USER", "sa")
 os.environ.setdefault("DB_PASSWORD", "Password!123")
 
-repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-sys.path.insert(0, repo_root)
-sys.path.insert(0, os.path.join(repo_root, "backend"))
 from backend.main import app
 
 class DummyDB:

@@ -15,10 +15,10 @@ from typing import Optional, Dict, Any, List
 from contextlib import contextmanager
 
 try:
-    env_path = Path(__file__).resolve().parents[1] / ".env"
+    env_path = Path(__file__).resolve().parents[3] / ".env"
     load_dotenv(dotenv_path=str(env_path))
 except Exception:
-    load_dotenv()
+    pass
 
 class DatabaseConnection:
     """Database connection manager for SQL Server"""

@@ -5,17 +5,27 @@ Main application entry point with all API routes.
 """
 
 import os
+from pathlib import Path
+from dotenv import load_dotenv
 import sys
 from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from time import time
-from datetime import datetime
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi import WebSocket, WebSocketDisconnect
 import uvicorn
+from datetime import datetime
+
+
+# Load unified root .env
+try:
+    env_path = Path(__file__).resolve().parents[3] / ".env"
+    load_dotenv(dotenv_path=str(env_path))
+except Exception:
+    pass
 
 # Add current directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

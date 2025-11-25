@@ -1185,3 +1185,21 @@ BEGIN
     VALUES(@ActorUserID, @Action, @Details, @AffectedAnalyzerID);
 END
 GO
+-- Add alert flags to app.Users if not present
+IF COL_LENGTH('app.Users','Sent80PercentWarning') IS NULL
+BEGIN
+    ALTER TABLE app.Users ADD Sent80PercentWarning BIT NOT NULL DEFAULT 0;
+END
+
+IF COL_LENGTH('app.Users','DoAutoOnTriggered') IS NULL
+BEGIN
+    ALTER TABLE app.Users ADD DoAutoOnTriggered BIT NOT NULL DEFAULT 0;
+END
+
+-- Optional stored procedure to set flags
+IF NOT EXISTS (
+    SELECT 1 FROM sys.objects WHERE object_id = OBJECT_ID(N'app.sp_SetUserAlertFlags') AND type IN (N'P', N'PC')
+)
+BEGIN
+    EXEC('CREATE PROCEDURE app.sp_SetUserAlertFlags @UserID INT, @Sent80 BIT, @AutoOn BIT AS BEGIN SET NOCOUNT ON; UPDATE app.Users SET Sent80PercentWarning=@Sent80, DoAutoOnTriggered=@AutoOn WHERE UserID=@UserID; END');
+END

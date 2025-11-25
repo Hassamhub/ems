@@ -1,6 +1,4 @@
-import os, sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'backend'))
+import os
 from backend.dal.database import db_helper
 
 def ensure_minimum_data():
